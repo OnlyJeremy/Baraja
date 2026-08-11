@@ -36,9 +36,9 @@ final class DemoViewController: UIViewController {
 
         deck.source = self
         deck.observer = self
-        deck.hInset = hInset
-        deck.gap = 0
-        deck.peekRatio = 0.06
+        deck.sideInset = hInset
+        deck.cardSpacing = 0
+        deck.peekFraction = 0.06
         deck.translatesAutoresizingMaskIntoConstraints = false
 
         view.addSubview(deck)
@@ -58,14 +58,14 @@ final class DemoViewController: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         // 首帧尺寸就绪后铺满第一批。
-        if deck.topIndex() == 0, deck.mountedCards().isEmpty, !stories.isEmpty {
-            deck.reloadResettingToTop()
+        if deck.currentIndex() == 0, deck.visibleCards().isEmpty, !stories.isEmpty {
+            deck.reloadFromStart()
         }
     }
 
     @objc private func reset() {
         stories = DemoStory.samples
-        deck.reloadResettingToTop()
+        deck.reloadFromStart()
     }
 }
 
@@ -73,15 +73,15 @@ final class DemoViewController: UIViewController {
 
 extension DemoViewController: BarajaSource {
 
-    func numberOfCards(in deck: BarajaView) -> Int { stories.count }
+    func cardCount(in deck: BarajaView) -> Int { stories.count }
 
-    func deck(_ deck: BarajaView, cardAt index: Int) -> UIView {
+    func baraja(_ deck: BarajaView, viewForCardAt index: Int) -> UIView {
         let card = DemoStoryCardView()
         card.configure(with: stories[index])
         return card
     }
 
-    func deck(_ deck: BarajaView, heightAt index: Int, cap: CGFloat, width: CGFloat) -> CGFloat {
+    func baraja(_ deck: BarajaView, heightForCardAt index: Int, maxHeight cap: CGFloat, width: CGFloat) -> CGFloat {
         sizingCard.configure(with: stories[index])
         return min(sizingCard.fittingHeight(width: width), cap)
     }
@@ -91,22 +91,22 @@ extension DemoViewController: BarajaSource {
 
 extension DemoViewController: BarajaObserver {
 
-    func deck(_ deck: BarajaView, didSettleOn index: Int) {
+    func baraja(_ deck: BarajaView, restedOn index: Int) {
         title = "Story \(index + 1) / \(stories.count)"
     }
 
-    func deck(_ deck: BarajaView, didDismiss index: Int, by gesture: BarajaGesture) {
+    func baraja(_ deck: BarajaView, sweptAway index: Int, via swipe: BarajaSwipe) {
         print("[Baraja] pass at \(index)")
     }
 
-    func deckNeedsMore(_ deck: BarajaView) {
+    func barajaWantsMore(_ deck: BarajaView) {
         // 演示分页：临近末尾时再补一批。
         let more = DemoStory.samples
         stories.append(contentsOf: more)
-        deck.appendNewCards()
+        deck.appendCards()
     }
 
-    func deckDidEmpty(_ deck: BarajaView) {
+    func barajaRanOut(_ deck: BarajaView) {
         title = "都看完啦"
     }
 }

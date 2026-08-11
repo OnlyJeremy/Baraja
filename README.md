@@ -30,56 +30,56 @@ import Baraja
 let deck = BarajaView()
 deck.source = self
 deck.observer = self
-deck.hInset = 16
-deck.gap = 12
-deck.peekRatio = 0.06
+deck.sideInset = 16
+deck.cardSpacing = 12
+deck.peekFraction = 0.06
 ```
 
 ### 数据源 `BarajaSource`
 
 ```swift
-func numberOfCards(in deck: BarajaView) -> Int
-func deck(_ deck: BarajaView, cardAt index: Int) -> UIView
-func deck(_ deck: BarajaView, heightAt index: Int, cap: CGFloat, width: CGFloat) -> CGFloat
+func cardCount(in board: BarajaView) -> Int
+func baraja(_ board: BarajaView, viewForCardAt index: Int) -> UIView
+func baraja(_ board: BarajaView, heightForCardAt index: Int, maxHeight: CGFloat, width: CGFloat) -> CGFloat
 ```
 
-`heightAt` 返回第 `index` 张卡按 `width` 宽折叠到 `cap` 高后的实测高度。
+`heightForCardAt` 返回第 `index` 张卡按 `width` 宽折叠到 `maxHeight` 高后的实测高度。
 
 ### 观察者 `BarajaObserver`
 
 所有方法均有默认空实现，按需实现即可：
 
 ```swift
-func deck(_ deck: BarajaView, didAdvanceTo index: Int)
-func deck(_ deck: BarajaView, didSettleOn index: Int)
-func deck(_ deck: BarajaView, didDismiss index: Int, by gesture: BarajaGesture)
-func deck(_ deck: BarajaView, shouldAllow gesture: BarajaGesture, to index: Int) -> Bool
-func deckNeedsMore(_ deck: BarajaView)
-func deck(_ deck: BarajaView, didDrag progress: CGFloat, gesture: BarajaGesture)
-func deck(_ deck: BarajaView, didDropCardAt index: Int)
-func deck(_ deck: BarajaView, didRecycleCardAt index: Int)
-func deck(_ deck: BarajaView, willDisplayCardAt index: Int)
-func deckDidRemeasure(_ deck: BarajaView)
-func deckDidEmpty(_ deck: BarajaView)
-func deckDidScroll(_ deck: BarajaView)
+func baraja(_ board: BarajaView, movedToTop index: Int)
+func baraja(_ board: BarajaView, restedOn index: Int)
+func baraja(_ board: BarajaView, sweptAway index: Int, via swipe: BarajaSwipe)
+func baraja(_ board: BarajaView, permitSwipe swipe: BarajaSwipe, toward index: Int) -> Bool
+func barajaWantsMore(_ board: BarajaView)
+func baraja(_ board: BarajaView, draggedBy progress: CGFloat, swipe: BarajaSwipe)
+func baraja(_ board: BarajaView, removedCardAt index: Int)
+func baraja(_ board: BarajaView, releasedCardAt index: Int)
+func baraja(_ board: BarajaView, aboutToShowCardAt index: Int)
+func barajaDidResize(_ board: BarajaView)
+func barajaRanOut(_ board: BarajaView)
+func barajaDidScroll(_ board: BarajaView)
 ```
 
 ### 常用方法
 
 | 方法 | 说明 |
 | --- | --- |
-| `reloadResettingToTop()` | 整表重置到第一张（首批加载 / 空态重试 / 切数据） |
-| `reloadKeepingPosition()` | 保位重载（原地数据变化，保留当前位置） |
-| `appendNewCards()` | 追加分页数据 |
-| `advance()` | 程序化前进到下一张 |
-| `dropTop()` | 删除当前顶卡 |
-| `drop(at:)` | 按索引批量删除 |
-| `topIndex()` | 当前顶卡索引 |
-| `resetSwipeTracking()` | 重置滑出去重记录 |
-| `mountedCards()` | 当前已上屏的卡视图集合 |
-| `scrollProxy` | 内部滚动视图（供阴影渐隐等计算相对偏移） |
+| `reloadFromStart()` | 整表重置到第一张（首批加载 / 空态重试 / 切数据） |
+| `reloadInPlace()` | 保位重载（原地数据变化，保留当前位置） |
+| `appendCards()` | 追加分页数据 |
+| `stepForward()` | 程序化前进到下一张 |
+| `removeTop()` | 删除当前顶卡 |
+| `remove(at:)` | 按索引批量删除 |
+| `currentIndex()` | 当前顶卡索引 |
+| `clearSwipeState()` | 重置滑出去重记录 |
+| `visibleCards()` | 当前已上屏的卡视图集合 |
+| `scrollHost` | 内部滚动视图（供阴影渐隐等计算相对偏移） |
 
-> 删卡契约：调用 `dropTop()` / `drop(at:)` 前，须先把对应卡从你自己的数据源移除（同一组索引）。
+> 删卡契约：调用 `removeTop()` / `remove(at:)` 前，须先把对应卡从你自己的数据源移除（同一组索引）。
 
 ## 环境要求
 
