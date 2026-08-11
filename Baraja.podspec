@@ -12,7 +12,6 @@ Pod::Spec.new do |s|
     - 只物化可视窗口附近的卡视图，内存 O(窗口)
     - 一屏一卡吸附、双向回看、上滑划出（pass）
     - 临近末尾预加载、限额门控、批量删卡
-    - 零第三方库依赖
   DESC
 
   s.homepage         = 'https://github.com/OnlyJeremy/Baraja'
@@ -24,4 +23,6 @@ Pod::Spec.new do |s|
   s.swift_version = '5.0'
 
   s.source_files = 'Pod/Classes/**/*.swift'
+
+  s.dependency 'SnapKit'
 end

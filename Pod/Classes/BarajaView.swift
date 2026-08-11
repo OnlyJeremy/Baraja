@@ -8,6 +8,7 @@
 //
 
 import UIKit
+import SnapKit
 
 // MARK: - 有序变更队列
 
@@ -201,13 +202,7 @@ public final class BarajaView: UIView {
         backgroundColor = .clear
         addSubview(scrollView)
         scrollView.addSubview(canvas)
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
+        scrollView.snp.makeConstraints { $0.edges.equalToSuperview() }
     }
 
     override func layoutSubviews() {
