@@ -205,7 +205,7 @@ public final class BarajaView: UIView {
         scrollView.snp.makeConstraints { $0.edges.equalToSuperview() }
     }
 
-    override func layoutSubviews() {
+    public override func layoutSubviews() {
         super.layoutSubviews()
         guard total > 0, bounds.height > 0, bounds.width > 0 else { return }
         // 卡高只是「内容 × 内容宽」的纯函数：仅在卡数或内容宽变化（首帧/旋转/分屏）时才重测重折；
@@ -564,7 +564,7 @@ public final class BarajaView: UIView {
 
 extension BarajaView: UIScrollViewDelegate {
 
-    func scrollViewWillEndDragging(_ scrollView: UIScrollView,
+    public func scrollViewWillEndDragging(_ scrollView: UIScrollView,
                                    withVelocity velocity: CGPoint,
                                    targetContentOffset: UnsafeMutablePointer<CGPoint>) {
         guard !mutations.isRunning else { return }   // 删卡/前进进行中，让行
@@ -602,7 +602,7 @@ extension BarajaView: UIScrollViewDelegate {
         }
     }
 
-    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+    public func scrollViewDidScroll(_ scrollView: UIScrollView) {
         observer?.deckDidScroll(self)
         guard !mutations.isRunning else { return }   // 删卡期间不检测滑出/不发拖拽进度
         refreshWindow()
@@ -617,15 +617,15 @@ extension BarajaView: UIScrollViewDelegate {
         }
     }
 
-    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+    public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         notifySettled()
     }
 
-    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+    public func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if !decelerate { notifySettled() }
     }
 
-    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+    public func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
         notifySettled()
     }
 
