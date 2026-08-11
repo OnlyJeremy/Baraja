@@ -1,0 +1,12 @@
+# Example app for the Baraja pod.
+#
+# 在本目录用 Xcode 新建 iOS App 工程，Product Name 必须叫 BarajaExample，
+# 使工程 target 名与下面的 `target 'BarajaExample'` 一致，然后执行 `pod install`。
+
+platform :ios, '14.0'
+
+target 'BarajaExample' do
+  use_frameworks!
+
+  pod 'Baraja', :path => '../'
+end
