@@ -2,39 +2,39 @@
 //  BarajaView.swift
 //  Baraja
 //
-//  垂直卡片牌组容器：逐卡动态高度 + 只物化可视窗口的卡视图。
-//  偏移表（cardHeights/offsets）保存全量高度，离屏卡无视图也能精确吸附；一屏一卡吸附、
-//  双向回看、上滑划出（pass）、临近末尾预加载、限额门控、删卡皆具备。
+//  纵向卡牌容器：每张卡高度独立测算，仅把可见范围内的卡真正加载成视图。
+//  全量高度存在 cardHeights/offsets 两张表里，离屏的卡即使没有视图也能算准吸附点；
+//  支持整屏单卡吸附、上下双向翻看、上划移除（pass）、接近底部自动续拉、配额拦截与删卡。
 //
 
 import UIKit
 import SnapKit
 
-// MARK: - 有序变更队列
+// MARK: - 串行操作队列
 
-/// 卡片增删/前进等有序操作的串行执行器。
-/// 动画进行时把后续操作排队，避免并发改写 cursor 游标与偏移表导致状态错乱。
+/// 把增删、前进这类需要有序执行的操作排成一条队列逐个跑。
+/// 有动画在跑时后来的操作先排队，防止同时改动 cursor 和高度表把状态搞乱。
 final class BarajaOpQueue {
 
     private var queue: [() -> Void] = []
-    /// 是否有操作正在跑（滚动代理据此让行，避免与删卡争用状态）。
+    /// 当前是否有操作在执行（滚动回调据此暂避，免得和删卡抢状态）。
     private(set) var busy = false
 
     var isEmpty: Bool { queue.isEmpty }
 
-    /// 排入一个操作；空闲则马上跑。
+    /// 压入一个操作；没在忙就立刻开跑。
     func enqueue(_ op: @escaping () -> Void) {
         queue.append(op)
         drain()
     }
 
-    /// 标记当前操作结束，接着跑下一个。
+    /// 收尾当前操作，继续跑下一个。
     func complete() {
         busy = false
         drain()
     }
 
-    /// 丢弃全部待执行（reload 时用）。
+    /// 清空待办队列（reload 场景）。
     func clear() {
         queue.removeAll()
         busy = false
@@ -48,10 +48,10 @@ final class BarajaOpQueue {
     }
 }
 
-/// 卡片手势去向。
+/// 卡片被划走后的两种方向。
 public enum BarajaSwipe {
-    case discard   // 上滑划出 = 略过（pass）
-    case recall    // 下滑回看（不产生业务动作）
+    case discard   // 向上划走 = 跳过（pass）
+    case recall    // 向下划回查看（不触发业务逻辑）
 }
 
 // MARK: - 数据源
@@ -59,40 +59,40 @@ public enum BarajaSwipe {
 public protocol BarajaSource: AnyObject {
     func cardCount(in board: BarajaView) -> Int
     func baraja(_ board: BarajaView, viewForCardAt index: Int) -> UIView
-    /// 第 index 张卡按 `width` 宽折叠到 `maxHeight` 高后的实测高度。
+    /// 返回第 index 张卡在 `width` 宽度下折叠、并限制到 `maxHeight` 后测得的高度。
     func baraja(_ board: BarajaView, heightForCardAt index: Int, maxHeight: CGFloat, width: CGFloat) -> CGFloat
 }
 
 // MARK: - 观察者
 
 public protocol BarajaObserver: AnyObject {
-    /// 吸附目标确定、顶卡切换时调用。
+    /// 确定吸附目标、顶部卡发生切换时触发。
     func baraja(_ board: BarajaView, movedToTop index: Int)
-    /// 顶卡完全停稳后调用（驱动解读仪式等）。
+    /// 顶部卡彻底静止后触发（用来驱动展开仪式等）。
     func baraja(_ board: BarajaView, restedOn index: Int)
-    /// 卡片划出屏幕（带手势方向）；pass 上报走这里，**纯 index**，去重由业务层自取。
+    /// 卡片被划出可视区（含方向）；pass 统计在此上报，**只给 index**，是否去重由外部决定。
     func baraja(_ board: BarajaView, sweptAway index: Int, via swipe: BarajaSwipe)
-    /// 是否允许朝目标方向滑动（限额门控）。
+    /// 询问是否放行某个方向的滑动（用于配额拦截）。
     func baraja(_ board: BarajaView, permitSwipe swipe: BarajaSwipe, toward index: Int) -> Bool
-    /// 临近末尾（倒数第 3 张）触发预加载。
+    /// 快到底部（还剩 3 张）时请求续拉。
     func barajaWantsMore(_ board: BarajaView)
-    /// 拖拽进度变化（震动反馈等）。
+    /// 拖动进度更新（可用于触感反馈）。
     func baraja(_ board: BarajaView, draggedBy progress: CGFloat, swipe: BarajaSwipe)
-    /// 卡片被**删除**（非滑出），携原始 index；删除绝不触发 sweptAway。
+    /// 卡片被**主动删除**（并非划走），带上原 index；删除永远不会触发 sweptAway。
     func baraja(_ board: BarajaView, removedCardAt index: Int)
-    /// 卡片视图被**回收**（滑出窗口、暂不在内存）；业务据此释放引用。
+    /// 卡片视图被**回收**（移出可视窗口、暂不驻留内存）；外部据此断开引用。
     func baraja(_ board: BarajaView, releasedCardAt index: Int)
-    /// 卡片物化进窗口、已定帧上屏（本帧同步）；宿主据此同步定格已解读卡，避免滑回时闪一帧空白。
+    /// 卡片被加载进窗口且本帧已定位上屏；宿主借此把已展开的卡同步定格，避免划回时闪一帧空白。
     func baraja(_ board: BarajaView, aboutToShowCardAt index: Int)
-    /// 卡高整表重测完成（首帧/旋转/分屏）；宿主据此把在场活卡按最新折叠档重新同步。
+    /// 全表高度重新测算完毕（首帧/旋转/分屏）；宿主据此把在场的卡按新的折叠档重排。
     func barajaDidResize(_ board: BarajaView)
-    /// 卡片全部用完（刷新拉空 / 删到空）。
+    /// 卡片彻底见底（刷新为空 / 删到空）。
     func barajaRanOut(_ board: BarajaView)
-    /// 每帧滚动回调（宿主用于阴影渐隐等）。
+    /// 每一帧滚动都会回调（宿主可做阴影渐隐之类）。
     func barajaDidScroll(_ board: BarajaView)
 }
 
-// 默认空实现，让观察者各方法可选。
+// 全部方法都给了默认空实现，按需重写即可。
 public extension BarajaObserver {
     func baraja(_ board: BarajaView, movedToTop index: Int) {}
     func baraja(_ board: BarajaView, restedOn index: Int) {}
@@ -110,54 +110,54 @@ public extension BarajaObserver {
 
 // MARK: - 容器
 
-/// 自定义垂直卡片牌组。
+/// 自研的纵向卡牌容器。
 ///
-/// **动态高度 + 窗口物化**：每张卡按折叠后的高度排布（cardHeights/offsets 全量偏移表），
-/// 但**只让可视窗口附近的卡上屏**（activeViews），滑出即回收、滚回按数据重建 —— 内存
-/// O(窗口)，不随预加载增长。高度由数据源**数据驱动**测得并缓存进偏移表，离屏卡无视图
-/// 也能精确吸附。一屏一卡吸附、双向回看、滑出去重（pass 幂等）、预加载、限额门控、删除俱全。
+/// **按需高度 + 窗口加载**：每张卡依折叠高度依次摆放（cardHeights/offsets 两张全量表），
+/// 但**只有可视窗口附近的卡才真正上屏**（activeViews），划走即回收、划回按数据重建 —— 内存
+/// 只和窗口大小相关，不会随续拉膨胀。高度来自数据源的**实测**并缓存进表，离屏卡没有视图
+/// 也能算准吸附。整屏单卡吸附、双向翻看、划出去重（pass 幂等）、续拉、配额拦截、删除一应俱全。
 public final class BarajaView: UIView {
 
     public weak var observer: BarajaObserver?
     public weak var source: BarajaSource?
 
-    /// 卡片左右内缩（外部设置）。
+    /// 卡片左右留白（由外部设置）。
     public var sideInset: CGFloat = 0
-    /// 卡间距（外部设置）。
+    /// 卡片之间的间隔（由外部设置）。
     public var cardSpacing: CGFloat = 0
 
     private var cardTotal = 0
     private var cursor = 0
 
-    /// 下一张露出自身高度的比例（微妙的偷看）。宿主可设 0 关闭偷看。
+    /// 下一张预露出的高度占比（一点点探头）。设为 0 即关闭探头。
     public var peekFraction: CGFloat = 0.06
 
-    /// 越过当前卡 5% 即吸附到相邻卡。
+    /// 拖过当前卡高度的 5% 就吸附到相邻卡。
     private let snapRatio: CGFloat = 0.05
 
-    /// 卡高上限：留 peek 给下一张。
+    /// 单卡最大高度：预留探头空间给下一张。
     private var maxCardHeight: CGFloat { bounds.height * (1 - peekFraction) }
-    /// 卡内容宽（去掉左右内缩）。
+    /// 卡片内容宽度（扣掉两侧留白）。
     private var contentWidth: CGFloat { bounds.width - 2 * sideInset }
 
-    /// 逐卡高度与累加 y 起点。
+    /// 每张卡的高度，以及据此累加得到的 y 起点。
     private var cardHeights: [CGFloat] = []
     private var offsets: [CGFloat] = []
 
-    /// 已回调过滑出的卡索引（防刷屏：滚动中同一张别每帧重复上报）。
-    /// **纯 index**，权威去重在业务层；删卡后清空。
+    /// 已上报过划出的卡索引（避免同一张在滚动中每帧重复上报）。
+    /// **仅是 index**，真正去重交给业务层；删卡后清零。
     private var reportedSwipes: Set<Int> = []
 
-    /// 有序变更队列（删卡/前进入队；reload 不入队，直接 clear 后重建）。
+    /// 串行操作队列（删卡、前进走入队；reload 不入队，直接清空后重建）。
     private let opQueue = BarajaOpQueue()
 
-    /// 重载代际：每次 reload 自增；过期动画 completion 检测到代际不符即跳过。
+    /// 重建版本号：每次 reload 自增；动画回调发现版本对不上就放弃。
     private var revision = 0
 
-    /// 上次预加载时的数据量，防止重复触发。
+    /// 上一次触发续拉时的数据量，用来防止重复触发。
     private var lastLoadedCount = 0
 
-    /// 上次完成布局的尺寸，避免每次 layoutSubviews 都重测。
+    /// 上一次布局完成时的尺寸，避免每次 layoutSubviews 都重新测量。
     private var lastBounds: CGSize = .zero
 
     private lazy var scroller: UIScrollView = {
@@ -174,19 +174,19 @@ public final class BarajaView: UIView {
     }()
 
     private let cardHost = UIView()
-    /// **窗口物化**：只持有可视窗口附近已上屏的卡（index→view），其余回收。
-    /// cardHeights/offsets 仍是全量偏移表，滚回时按数据重建即可。
+    /// **窗口内加载**：只保留可视窗口附近已上屏的卡（index→view），其余回收。
+    /// cardHeights/offsets 依旧是全量表，划回时按数据重建即可。
     private var activeViews: [Int: UIView] = [:]
 
-    /// 可视区上下额外保留的缓冲（各约一屏），确保上一张/下一张提前物化、滚动不见白。
+    /// 可视区上下各多留约一屏的缓冲，保证相邻卡提前加载，滚动时不露白。
     private var bufferPad: CGFloat { bounds.height }
 
-    // MARK: 只读透出（供宿主做阴影渐隐）
+    // MARK: 只读暴露（供宿主做阴影渐隐）
 
-    /// 暴露内部滚动视图供 fadeShadows 计算相对偏移。
+    /// 把内部滚动视图透出去，方便宿主计算相对偏移做阴影渐隐。
     public var scrollHost: UIScrollView { scroller }
 
-    /// 当前已上屏的卡视图集合。
+    /// 当前处于上屏状态的卡视图集合。
     public func visibleCards() -> [UIView] { Array(activeViews.values) }
 
     // MARK: 初始化
@@ -208,8 +208,8 @@ public final class BarajaView: UIView {
     public override func layoutSubviews() {
         super.layoutSubviews()
         guard cardTotal > 0, bounds.height > 0, bounds.width > 0 else { return }
-        // 卡高只是「内容 × 内容宽」的纯函数：仅在卡数或内容宽变化（首帧/旋转/分屏）时才重测重折；
-        // 导航转场里视口高会瞬时抖动，若跟着重测会让跨挡卡忽折忽展造成跳变，故高度变化只做轻量重排。
+        // 卡高只取决于「内容 + 内容宽度」：只有卡数或宽度变化（首帧/旋转/分屏）才需要重新测量折叠；
+        // 导航转场时视口高度会瞬时抖动，跟着重测会让跨档卡反复折叠展开而跳动，所以高度变化只做轻量重排。
         let needsMeasure = cardHeights.count != cardTotal || bounds.width != lastBounds.width
         let sizeChanged = bounds.size != lastBounds
         if needsMeasure { measureAll() }
@@ -218,15 +218,15 @@ public final class BarajaView: UIView {
             scroller.contentOffset.y = offsetOf(cursor)
             syncVisible()
             positionCards()
-            // 真重测后（如旋转）折叠档可能变了，通知宿主把活卡按新档重新同步，避免内容与帧错位。
+            // 真正重测后（如旋转）折叠档可能变化，通知宿主把在场卡按新档同步，避免内容和帧对不上。
             if needsMeasure { observer?.barajaDidResize(self) }
         }
         lastBounds = bounds.size
     }
 
-    // MARK: 对外方法
+    // MARK: 对外接口
 
-    /// 整表重置到第一张（首批加载 / 空态重试 / 切数据）。
+    /// 全量重置回第一张（首批加载 / 空态重试 / 切换数据源）。
     public func reloadFromStart() {
         guard let source = source else { return }
         revision += 1
@@ -239,7 +239,7 @@ public final class BarajaView: UIView {
         notifyAfterRebuild()
     }
 
-    /// 保位重载（原地数据变化：重建全部卡视图但**保留当前位置**）。
+    /// 原地重载（数据就地变化：重建所有卡视图但**保持当前位置不变**）。
     public func reloadInPlace() {
         guard let source = source else { return }
         revision += 1
@@ -253,13 +253,13 @@ public final class BarajaView: UIView {
         notifyAfterRebuild()
     }
 
-    /// 追加分页数据（只量新卡高度、延长偏移表；视图按窗口懒物化）。
+    /// 追加下一页数据（只测新卡高度、延长高度表；视图按窗口懒加载）。
     public func appendCards() {
         guard let source = source else { return }
         let oldCount = cardTotal
         cardTotal = source.cardCount(in: self)
         guard cardTotal > oldCount else { return }
-        // 追加前已划到底/空态：追加后首张新卡即新顶卡，需吸附并驱动仪式。
+        // 追加前已经翻到底/空态：追加后第一张新卡即成新顶卡，需吸附并驱动仪式。
         let wasExhausted = cursor >= oldCount
         if cardHeights.count == oldCount, maxCardHeight > 0, contentWidth > 0 {
             for index in oldCount..<cardTotal {
@@ -283,7 +283,7 @@ public final class BarajaView: UIView {
 
     public func currentIndex() -> Int { cursor }
 
-    /// 程序化前进到下一张（用于 like / Say hi）。
+    /// 代码驱动前进到下一张（用于 like / Say hi）。
     public func stepForward() {
         opQueue.enqueue { [weak self] in
             self?.runStep()
@@ -304,14 +304,14 @@ public final class BarajaView: UIView {
         }, completion: { [weak self] _ in
             guard let self else { return }
             defer { self.opQueue.complete() }
-            guard rev == self.revision else { return }   // 期间发生 reload/删卡 → 丢弃
+            guard rev == self.revision else { return }   // 期间若发生 reload/删卡 → 直接丢弃
             let prev = self.cursor
             self.cursor = dest
             self.syncVisible()
             if prev != dest {
                 self.observer?.baraja(self, movedToTop: dest)
             }
-            // UIView.animate 不触发 didEndDecelerating，需手动驱动用尽 / 新顶卡仪式。
+            // UIView.animate 不会回调 didEndDecelerating，见底/新顶卡的仪式需手动驱动。
             if self.cursor >= self.cardTotal {
                 self.observer?.barajaRanOut(self)
             } else {
@@ -321,7 +321,7 @@ public final class BarajaView: UIView {
         })
     }
 
-    /// 落位偏移：已划过最后一张（index >= cardTotal）时停在「末张完全移出顶部」处（用尽）；否则停在该卡顶部。
+    /// 停靠偏移：越过最后一张（index >= cardTotal）时停在「末张完全滑出顶部」处（见底）；否则停在该卡顶部。
     private func restOffset(for index: Int) -> CGFloat {
         guard index < cardTotal else {
             let last = cardTotal - 1
@@ -330,8 +330,8 @@ public final class BarajaView: UIView {
         return offsetOf(index)
     }
 
-    /// 删除当前顶卡：**无动画**，下一张直接顶到当前位置。
-    /// 契约同 remove(at:)：调用方先删数据源对应卡。
+    /// 删掉当前顶卡：**不带动画**，下一张直接补到当前位置。
+    /// 约定同 remove(at:)：调用方需先删掉数据源里对应的卡。
     public func removeTop() {
         opQueue.enqueue { [weak self] in
             guard let self else { return }
@@ -340,8 +340,8 @@ public final class BarajaView: UIView {
         }
     }
 
-    /// 按索引批量删除（拉黑 / 已建会话等）。
-    /// 契约：调用方须**先**把这些卡从自己的数据源移除（同一组索引），再调本方法。
+    /// 按索引批量删除（拉黑 / 已建会话等场景）。
+    /// 约定：调用方须**先**在自己数据源里移除这些卡（同一批索引），再来调本方法。
     public func remove(at indices: [Int]) {
         opQueue.enqueue { [weak self] in
             guard let self else { return }
@@ -354,7 +354,7 @@ public final class BarajaView: UIView {
         reportedSwipes.removeAll()
     }
 
-    // MARK: 布局度量
+    // MARK: 尺寸计算
 
     private func offsetOf(_ index: Int) -> CGFloat {
         guard index >= 0, index < offsets.count else { return 0 }
@@ -366,7 +366,7 @@ public final class BarajaView: UIView {
         return cardHeights[index]
     }
 
-    /// 重建逐卡高度表（cardHeights）与累加起点（offsets）。
+    /// 重新构建每张卡的高度表（cardHeights）和累加起点（offsets）。
     private func measureAll() {
         guard let source = source, maxCardHeight > 0, contentWidth > 0 else { return }
         cardHeights = (0..<cardTotal).map {
@@ -375,7 +375,7 @@ public final class BarajaView: UIView {
         recomputeOffsets()
     }
 
-    /// 由现有 cardHeights 累加重算 offsets（删卡后用，不重新量高）。
+    /// 直接拿现有 cardHeights 累加出 offsets（删卡后用，不重新测高）。
     private func recomputeOffsets() {
         offsets = []
         var y: CGFloat = 0
@@ -385,9 +385,9 @@ public final class BarajaView: UIView {
         }
     }
 
-    // MARK: 私有
+    // MARK: 内部实现
 
-    /// 重建偏移表（数据驱动量高）并按窗口物化可视卡（**不发回调**）。
+    /// 重建高度表（按数据实测）并按窗口加载可视卡（**不发任何回调**）。
     private func rebuild() {
         releaseAll()
         cardHeights = []
@@ -397,14 +397,14 @@ public final class BarajaView: UIView {
             cardHost.frame = .zero
             return
         }
-        measureAll()            // 量全高；bounds 未就绪则留空，交给 layoutSubviews
+        measureAll()            // 测全部高度；bounds 还没就绪就先留空，交给 layoutSubviews
         updateContentSize()
         cardHost.frame = CGRect(x: 0, y: 0, width: bounds.width,
                                 height: (offsets.last ?? 0) + (cardHeights.last ?? 0))
-        syncVisible()           // 只物化可视窗口附近的卡
+        syncVisible()           // 只加载可视窗口附近的卡
     }
 
-    /// 回收全部已上屏卡，逐个通知业务释放引用。
+    /// 回收所有已上屏的卡，并逐个通知业务方释放引用。
     private func releaseAll() {
         let indices = Array(activeViews.keys)
         activeViews.values.forEach { $0.removeFromSuperview() }
@@ -412,7 +412,7 @@ public final class BarajaView: UIView {
         indices.forEach { observer?.baraja(self, releasedCardAt: $0) }
     }
 
-    /// 重建后异步通知：有卡 → 顶卡展示；无卡 → 空态。下一 runloop 等布局稳定。
+    /// 重建完成后异步通知：有卡 → 展示顶卡；没卡 → 空态。放到下一轮 runloop 等布局稳定。
     private func notifyAfterRebuild() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -434,9 +434,9 @@ public final class BarajaView: UIView {
         cardHost.frame = CGRect(x: 0, y: 0, width: bounds.width, height: stackHeight)
     }
 
-    // MARK: 窗口物化
+    // MARK: 窗口加载
 
-    /// 当前应物化的卡索引区间 = 与「可视矩形 ± bufferPad」相交的卡。
+    /// 当前应加载的卡索引区间 = 与「可视矩形 ± bufferPad」相交的那些卡。
     private func visibleRange() -> ClosedRange<Int>? {
         guard cardTotal > 0, cardHeights.count == cardTotal, bounds.height > 0 else { return nil }
         let topY = scroller.contentOffset.y - bufferPad
@@ -449,16 +449,16 @@ public final class BarajaView: UIView {
                 if first < 0 { first = index }
                 last = index
             } else if first >= 0 {
-                break   // offsets 单调增，过区间即停
+                break   // offsets 递增，越过区间即可停下
             }
         }
-        if first < 0 {   // 还没量好/越界：退化到当前卡 ±1
+        if first < 0 {   // 还没测好或越界：退化成当前卡 ±1
             return max(0, cursor - 1)...min(cardTotal - 1, cursor + 1)
         }
         return first...last
     }
 
-    /// 物化进窗口的卡、回收出窗口的卡（diff，只在变化时增删）。
+    /// 加载进窗口的卡、回收出窗口的卡（做差集，只在变化处增删）。
     private func syncVisible() {
         guard let range = visibleRange(), let source = source else { return }
         for (index, card) in activeViews where !range.contains(index) {
@@ -472,7 +472,7 @@ public final class BarajaView: UIView {
                                 width: contentWidth, height: heightOf(index))
             cardHost.addSubview(card)
             activeViews[index] = card
-            // 定帧后同步通知宿主：已解读卡在入画同一帧即定格揭示，去掉「无→有」的一帧空白。
+            // 定位后当帧通知宿主：已展开的卡在入画同一帧就定格呈现，消掉「无→有」的一帧空白。
             card.layoutIfNeeded()
             observer?.baraja(self, aboutToShowCardAt: index)
         }
@@ -481,11 +481,11 @@ public final class BarajaView: UIView {
     private func updateContentSize() {
         let stackHeight = (offsets.last ?? 0) + (cardHeights.last ?? 0)
         scroller.contentSize = CGSize(width: bounds.width, height: stackHeight)
-        // 预留一屏底部内距：让矮的最后一张能吸附到顶，并给「末张上滑划出」留出滚动空间。
+        // 底部预留一屏内距：让偏矮的末张也能吸附到顶，并为「末张上划移除」留出滚动余量。
         scroller.contentInset.bottom = max(0, bounds.height)
     }
 
-    /// 检测向上完全滑出屏幕的卡（= pass），按 index 防刷屏回调一次。
+    /// 找出彻底向上划出屏幕的卡（= pass），按 index 去重，每张只回调一次。
     private func checkSweptCards() {
         guard cursor > 0 else { return }
         let offsetY = scroller.contentOffset.y
@@ -503,12 +503,12 @@ public final class BarajaView: UIView {
         observer?.baraja(self, sweptAway: index, via: swipe)
     }
 
-    /// 删除若干卡（全量索引，降序处理）：删 cardHeights 项、重算 offsets、补偿 contentOffset，
-    /// 回收全部上屏卡后按窗口重建，并发删除/展示/空态/预加载回调。
+    /// 删除若干卡（全量索引，降序处理）：移除 cardHeights 项、重算 offsets、修正 contentOffset，
+    /// 回收全部上屏卡后按窗口重建，并派发删除/展示/空态/续拉等回调。
     private func runRemove(indices localIndices: [Int]) {
         let valid = localIndices.filter { $0 >= 0 && $0 < cardTotal }.sorted()
         guard !valid.isEmpty else { return }
-        revision += 1   // 失效进行中的动画 completion
+        revision += 1   // 让进行中的动画回调失效
 
         let removedBeforeTop = valid.filter { $0 < cursor }.count
         var removedHeightAboveTop: CGFloat = 0
@@ -567,7 +567,7 @@ extension BarajaView: UIScrollViewDelegate {
     public func scrollViewWillEndDragging(_ scrollView: UIScrollView,
                                           withVelocity velocity: CGPoint,
                                           targetContentOffset: UnsafeMutablePointer<CGPoint>) {
-        guard !opQueue.busy else { return }   // 删卡/前进进行中，让行
+        guard !opQueue.busy else { return }   // 删卡/前进还在跑，先让行
         let h = heightOf(cursor)
         guard h > 0 else { return }
         let delta = scrollView.contentOffset.y - offsetOf(cursor)
@@ -578,7 +578,7 @@ extension BarajaView: UIScrollViewDelegate {
         } else {
             dest = (abs(delta) / h) >= snapRatio ? cursor - 1 : cursor
         }
-        // 允许到 cardTotal = 末张向上划出（用尽）；其余夹在有效区间。
+        // 上限取到 cardTotal 表示末张向上划走（见底）；其余夹在有效区间内。
         dest = max(0, min(dest, cardTotal))
 
         let swipe: BarajaSwipe = dest > cursor ? .discard : .recall
@@ -604,7 +604,7 @@ extension BarajaView: UIScrollViewDelegate {
 
     public func scrollViewDidScroll(_ scrollView: UIScrollView) {
         observer?.barajaDidScroll(self)
-        guard !opQueue.busy else { return }   // 删卡期间不检测滑出/不发拖拽进度
+        guard !opQueue.busy else { return }   // 删卡过程中不检测划出、也不派发拖动进度
         syncVisible()
         checkSweptCards()
         let h = heightOf(cursor)
@@ -629,7 +629,7 @@ extension BarajaView: UIScrollViewDelegate {
         emitSettle()
     }
 
-    /// 落定后回调：已划过最后一张 → 用尽；否则驱动顶卡展示。
+    /// 停稳后回调：越过最后一张 → 见底；否则驱动顶卡展示。
     private func emitSettle() {
         if cursor >= cardTotal {
             observer?.barajaRanOut(self)
