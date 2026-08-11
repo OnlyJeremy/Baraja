@@ -263,7 +263,7 @@ public final class BarajaView: UIView {
         let wasExhausted = cursor >= oldCount
         if cardHeights.count == oldCount, maxCardHeight > 0, contentWidth > 0 {
             for index in oldCount..<cardTotal {
-                cardHeights.append(source.baraja(self, heightForCardAt: index, maxHeight: maxCardHeight, width: contentWidth))
+                cardHeights.append(measuredHeight(at: index))
             }
             recomputeOffsets()
         } else {
@@ -321,13 +321,13 @@ public final class BarajaView: UIView {
         })
     }
 
-    /// 停靠偏移：越过最后一张（index >= cardTotal）时停在「末张完全滑出顶部」处（见底）；否则停在该卡顶部。
+    /// 停靠偏移：未越过末张就停在该卡顶部；越过（index >= cardTotal）则停在「末张完全滑出顶部」处（见底）。
     private func restOffset(for index: Int) -> CGFloat {
-        guard index < cardTotal else {
-            let last = cardTotal - 1
-            return offsetOf(last) + heightOf(last)
+        if index < cardTotal {
+            return offsetOf(index)
         }
-        return offsetOf(index)
+        let last = cardTotal - 1
+        return offsetOf(last) + heightOf(last)
     }
 
     /// 删掉当前顶卡：**不带动画**，下一张直接补到当前位置。
@@ -366,22 +366,26 @@ public final class BarajaView: UIView {
         return cardHeights[index]
     }
 
+    /// 单张测高：向数据源问第 index 张卡在当前折叠档/宽度下的高度。
+    private func measuredHeight(at index: Int) -> CGFloat {
+        source?.baraja(self, heightForCardAt: index, maxHeight: maxCardHeight, width: contentWidth) ?? 0
+    }
+
     /// 重新构建每张卡的高度表（cardHeights）和累加起点（offsets）。
     private func measureAll() {
-        guard let source = source, maxCardHeight > 0, contentWidth > 0 else { return }
-        cardHeights = (0..<cardTotal).map {
-            source.baraja(self, heightForCardAt: $0, maxHeight: maxCardHeight, width: contentWidth)
-        }
+        guard source != nil, maxCardHeight > 0, contentWidth > 0 else { return }
+        cardHeights = (0..<cardTotal).map { measuredHeight(at: $0) }
         recomputeOffsets()
     }
 
     /// 直接拿现有 cardHeights 累加出 offsets（删卡后用，不重新测高）。
+    /// 相当于对高度表（每项额外叠加 cardSpacing）做前缀和。
     private func recomputeOffsets() {
-        offsets = []
-        var y: CGFloat = 0
-        for h in cardHeights {
-            offsets.append(y)
-            y += h + cardSpacing
+        offsets = [CGFloat](repeating: 0, count: cardHeights.count)
+        var running: CGFloat = 0
+        for i in cardHeights.indices {
+            offsets[i] = running
+            running += cardHeights[i] + cardSpacing
         }
     }
 
@@ -459,13 +463,24 @@ public final class BarajaView: UIView {
     }
 
     /// 加载进窗口的卡、回收出窗口的卡（做差集，只在变化处增删）。
+    /// 顺序固定：先回收出窗口的旧卡，再挂载入窗口的新卡。
     private func syncVisible() {
         guard let range = visibleRange(), let source = source else { return }
+        recycleOutside(keeping: range)
+        mountInside(range: range, source: source)
+    }
+
+    /// 回收落在窗口外的已上屏卡，逐个通知业务方断开引用。
+    private func recycleOutside(keeping range: ClosedRange<Int>) {
         for (index, card) in activeViews where !range.contains(index) {
             card.removeFromSuperview()
             activeViews[index] = nil
             observer?.baraja(self, releasedCardAt: index)
         }
+    }
+
+    /// 把窗口内尚未上屏的卡按数据重建、定位，并在入画同一帧通知宿主定格。
+    private func mountInside(range: ClosedRange<Int>, source: BarajaSource) {
         for index in range where activeViews[index] == nil {
             let card = source.baraja(self, viewForCardAt: index)
             card.frame = CGRect(x: sideInset, y: offsetOf(index),
@@ -567,20 +582,18 @@ extension BarajaView: UIScrollViewDelegate {
     public func scrollViewWillEndDragging(_ scrollView: UIScrollView,
                                           withVelocity velocity: CGPoint,
                                           targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        handleWillSettle(scrollView, targetContentOffset: targetContentOffset)
+    }
+
+    /// 拖动松手将停：算出吸附落点、征询配额放行，通过则提交。
+    private func handleWillSettle(_ scrollView: UIScrollView,
+                                  targetContentOffset: UnsafeMutablePointer<CGPoint>) {
         guard !opQueue.busy else { return }   // 删卡/前进还在跑，先让行
         let h = heightOf(cursor)
         guard h > 0 else { return }
+
         let delta = scrollView.contentOffset.y - offsetOf(cursor)
-
-        var dest: Int
-        if delta > 0 {
-            dest = (delta / h) >= snapRatio ? cursor + 1 : cursor
-        } else {
-            dest = (abs(delta) / h) >= snapRatio ? cursor - 1 : cursor
-        }
-        // 上限取到 cardTotal 表示末张向上划走（见底）；其余夹在有效区间内。
-        dest = max(0, min(dest, cardTotal))
-
+        let dest = snapDestination(delta: delta, cardHeight: h)
         let swipe: BarajaSwipe = dest > cursor ? .discard : .recall
 
         if dest != cursor,
@@ -589,7 +602,27 @@ extension BarajaView: UIScrollViewDelegate {
             targetContentOffset.pointee.y = offsetOf(cursor)
             return
         }
+        commitSettle(to: dest, swipe: swipe, targetContentOffset: targetContentOffset)
+    }
 
+    /// 位移换算吸附档：带符号的位移比例越过阈值就走向相邻卡；
+    /// 落点夹在 [0, cardTotal]，上限 cardTotal 表示末张向上划走（见底）。
+    private func snapDestination(delta: CGFloat, cardHeight h: CGFloat) -> Int {
+        let fraction = delta / h
+        let stepped: Int
+        if fraction >= snapRatio {
+            stepped = cursor + 1
+        } else if fraction <= -snapRatio {
+            stepped = cursor - 1
+        } else {
+            stepped = cursor
+        }
+        return max(0, min(stepped, cardTotal))
+    }
+
+    /// 提交落点：更新 cursor、写回停靠偏移，按需派发顶卡切换与临近续拉。
+    private func commitSettle(to dest: Int, swipe: BarajaSwipe,
+                             targetContentOffset: UnsafeMutablePointer<CGPoint>) {
         let prev = cursor
         cursor = dest
         targetContentOffset.pointee.y = restOffset(for: dest)
@@ -607,14 +640,18 @@ extension BarajaView: UIScrollViewDelegate {
         guard !opQueue.busy else { return }   // 删卡过程中不检测划出、也不派发拖动进度
         syncVisible()
         checkSweptCards()
+        emitDragProgress(at: scrollView.contentOffset.y)
+    }
+
+    /// 拖动进度播报：把当前偏移换算成对顶卡的位移比例，越过极小阈值才通知（含方向）。
+    private func emitDragProgress(at offsetY: CGFloat) {
         let h = heightOf(cursor)
         guard h > 0 else { return }
-        let delta = scrollView.contentOffset.y - offsetOf(cursor)
+        let delta = offsetY - offsetOf(cursor)
         let progress = abs(delta) / h
-        if progress > 0.01 {
-            let swipe: BarajaSwipe = delta > 0 ? .discard : .recall
-            observer?.baraja(self, draggedBy: progress, swipe: swipe)
-        }
+        guard progress > 0.01 else { return }
+        let swipe: BarajaSwipe = delta > 0 ? .discard : .recall
+        observer?.baraja(self, draggedBy: progress, swipe: swipe)
     }
 
     public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
