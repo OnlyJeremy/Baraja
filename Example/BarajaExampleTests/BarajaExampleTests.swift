@@ -1,0 +1,19 @@
+//
+//  BarajaExampleTests.swift
+//  BarajaExampleTests
+//
+//  Created by presence83 on 2026/8/11.
+//
+
+import Testing
+@testable import BarajaExample
+
+struct BarajaExampleTests {
+
+    @Test func example() async throws {
+        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
+        // Swift Testing Documentation
+        // https://developer.apple.com/documentation/testing
+    }
+
+}
